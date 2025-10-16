@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Datos View Source (Scraper)</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f6f8;
+      color: #222;
+      padding: 20px;
+      max-width: 900px;
+      margin: auto;
+    }
+    header {text-align:center;margin-bottom:18px}
+    h1 {margin:6px 0;color:#0b3d91}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+    input[type=text]{padding:8px;border-radius:6px;border:1px solid #cfd8e3;flex:1}
+    select, button {padding:8px 12px;border-radius:6px;border:0;cursor:pointer}
+    button.primary{background:#0b63d4;color:white}
+    button.secondary{background:#e2e8f0}
+    .card{background:white;padding:12px;border-radius:10px;box-shadow:0 6px 18px rgba(8,20,50,0.06);margin-top:10px}
+    .numbers{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+    .number{background:#ffd54f;padding:6px 10px;border-radius:6px;font-weight:700}
+    pre{background:#0b1220;color:#e6f0ff;padding:12px;border-radius:8px;overflow:auto}
+    footer{margin-top:18px;font-size:13px;color:#555}
+    .small {font-size:13px;color:#666}
+    .json-preview {white-space:pre-wrap; background:#fff; padding:10px; border-radius:8px; max-height:300px; overflow:auto; border:1px solid #e6edf7}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Datos View Source (Scraper)</h1>
+    <div>Solo HTML, CSS y JS. Usa un proxy CORS si el navegador bloquea la petición.</div>
+  </header>
+
+  <div class="card">
+    <div class="controls">
+      <input id="url" type="text" value="https://www.loteriasmundiales.com.ar/" />
+      <select id="mode">
+        <option value="allorigins">Proxy público (allorigins)</option>
+        <option value="direct">Fetch directo</option>
+        <option value="custom">Proxy personalizado</option>
+      </select>
+      <input id="proxy" type="text" placeholder="https://mi-proxy.com/proxy?url=" style="display:none;width:340px" />
+      <button id="btnFetch" class="primary">Obtener Source</button>
+      <button id="btnRawToJson" class="secondary" title="Convierte el RAW HTML actual a JSON">RAW → JSON</button>
+      <button id="btnDownload" class="secondary">Descargar JSON</button>
+    </div>
+
+    <div id="status" style="margin-bottom:8px;color:#333">Estado: Esperando...</div>
+
+    <div id="results"></div>
+
+    <h3>RAW HTML (para elegir selectores)</h3>
+    <pre id="raw" style="height:180px">—</pre>
+
+    <h3 class="small" style="margin-top:10px">JSON generado desde RAW</h3>
+    <div id="rawJsonPreview" class="json-preview">—</div>
+  </div>
+
+  <footer>
+    <div>Modo recomendado: usar tu propio proxy (Node/Express) en producción. Ejemplo: <code>/proxy?url=</code></div>
+  </footer>
+
+  <script>
+    const btn = document.getElementById('btnFetch');
+    const btnRawToJson = document.getElementById('btnRawToJson');
+    const btnDownload = document.getElementById('btnDownload');
+    const urlInput = document.getElementById('url');
+    const mode = document.getElementById('mode');
+    const proxyInput = document.getElementById('proxy');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    const raw = document.getElementById('raw');
+    const rawJsonPreview = document.getElementById('rawJsonPreview');
+
+    mode.addEventListener('change', () => {
+      proxyInput.style.display = mode.value === 'custom' ? 'inline-block' : 'none';
+    });
+
+    async function fetchWithMode(url) {
+      if (mode.value === 'direct') {
+        const r = await fetch(url, {credentials:'omit'});
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return await r.text();
+      }
+      if (mode.value === 'allorigins') {
+        const wrap = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+        const r = await fetch(wrap);
+        if (!r.ok) throw new Error('Proxy público error: ' + r.status);
+        return await r.text();
+      }
+      if (mode.value === 'custom') {
+        const proxy = proxyInput.value.trim();
+        if (!proxy) throw new Error('Debe indicar la URL de su proxy personalizado');
+        const full = proxy + encodeURIComponent(url);
+        const r = await fetch(full);
+        if (!r.ok) throw new Error('Proxy personalizado error: ' + r.status);
+        return await r.text();
+      }
+    }
+
+    // Intento de extracción de "Cabezas" — ajustar según estructura real del sitio
+    function parseCabezas(html) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      // Buscamos secciones que parezcan "cabezas"
+      // Intentamos varias aproximaciones por si cambia la estructura:
+      const selectors = [
+        '.cabezas',        // selector obvio si existe
+        '.resultados-cabezas',
+        '#cabezas',
+        '.card.cabezas',
+        '.card'            // fallback: revisar todas las cards y filtrar por texto
+      ];
+
+      let nodes = [];
+      for (const s of selectors) {
+        nodes = Array.from(doc.querySelectorAll(s));
+        if (nodes.length) break;
+      }
+
+      // si no encontramos con estos, intentamos heurística: buscar palabras 'Cabezas' en headers
+      if (!nodes.length) {
+        const headers = Array.from(doc.querySelectorAll('h1,h2,h3,h4')).filter(h => /cabeza/i.test(h.textContent));
+        if (headers.length) {
+          headers.forEach(h => {
+            const parent = h.closest('section,div') || h.parentElement;
+            if (parent) nodes.push(parent);
+          });
+        }
+      }
+
+      // Ahora convertimos nodes a JSON: título, texto, números detectados
+      const out = nodes.map(n => {
+        const title = n.querySelector('h1,h2,h3,h4')?.textContent?.trim() || (n.getAttribute('aria-label')||'').trim() || 'Sin título';
+        // Buscar números de 1 o 2 dígitos que sean probables cabezas
+        const text = n.textContent.replace(/\s+/g,' ').trim();
+        const numbers = Array.from(n.querySelectorAll('li,span,div')).map(el => el.textContent.trim()).filter(t => /^\d{1,2}$/.test(t));
+        // Si no hay elementos, intentar extraer con regex
+        let numbersFromText = text.match(/\b\d{1,2}\b/g) || [];
+        numbersFromText = numbersFromText.filter((v,i,arr) => arr.indexOf(v)===i);
+        const uniq = Array.from(new Set(numbers.concat(numbersFromText)));
+        return { title, textSnippet: text.slice(0,200), numbers: uniq };
+      });
+
+      return out;
+    }
+
+    // --- NUEVO: convertir RAW HTML a JSON de ayuda para selectors ---
+    // Construye un selector 'amigable' para un elemento: usa id si existe, sino tag + primeras clases.
+    function buildSimpleSelector(el) {
+      if (!el || !el.tagName) return null;
+      if (el.id) return '#' + el.id;
+      const tag = el.tagName.toLowerCase();
+      const cls = (el.className || '').toString().trim().split(/\s+/).filter(Boolean).slice(0,2);
+      return tag + (cls.length ? '.' + cls.join('.') : '');
+    }
+
+    // Genera un camino CSS desde el elemento hasta el body (limitado)
+    function selectorPath(el) {
+      const parts = [];
+      let node = el;
+      let depth = 0;
+      while (node && node.nodeType === 1 && depth < 6 && node.tagName.toLowerCase() !== 'body') {
+        parts.unshift(buildSimpleSelector(node));
+        node = node.parentElement;
+        depth++;
+      }
+      return parts.join(' > ') || buildSimpleSelector(el);
+    }
+
+    function htmlToHelperJson(html) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      // Tomamos ejemplos útiles: elementos con id, con clases frecuentes y headers
+      const byId = Array.from(doc.querySelectorAll('[id]')).slice(0,50).map(el => ({
+        tag: el.tagName.toLowerCase(),
+        id: el.id,
+        classes: (el.className||'').toString().trim().split(/\s+/).filter(Boolean),
+        text: (el.textContent||'').trim().slice(0,120),
+        selector: '#' + el.id,
+        path: selectorPath(el)
+      }));
+
+      // elementos con clases (agrupar por clase y tomar ejemplos)
+      const classElems = Array.from(doc.querySelectorAll('[class]')).slice(0,200).map(el => ({
+        tag: el.tagName.toLowerCase(),
+        classes: (el.className||'').toString().trim().split(/\s+/).filter(Boolean).slice(0,4),
+        text: (el.textContent||'').trim().slice(0,80),
+        selector: buildSimpleSelector(el),
+        path: selectorPath(el)
+      }));
+
+      // headers y sections
+      const headers = Array.from(doc.querySelectorAll('h1,h2,h3,h4')).map(h => ({
+        tag: h.tagName.toLowerCase(),
+        text: (h.textContent||'').trim().slice(0,200),
+        selector: buildSimpleSelector(h),
+        path: selectorPath(h)
+      }));
+
+      // contar tags más frecuentes
+      const tagCounts = {};
+      Array.from(doc.querySelectorAll('*')).forEach(el => {
+        const t = el.tagName.toLowerCase();
+        tagCounts[t] = (tagCounts[t] || 0) + 1;
+      });
+      const tagCountsArr = Object.entries(tagCounts).sort((a,b)=>b[1]-a[1]).slice(0,30).map(([tag,count])=>({tag,count}));
+
+      return {
+        summary: {
+          title: doc.querySelector('title')?.textContent || null,
+          urlSample: urlInput.value || null,
+          totalElements: Object.values(tagCounts).reduce((a,b)=>a+b,0)
+        },
+        topTags: tagCountsArr,
+        ids: byId,
+        classesSample: classElems,
+        headers: headers
+      };
+    }
+
+    let lastJson = [];
+    let lastRawHtml = ''; // <-- guardamos el HTML completo aquí
+
+    btn.addEventListener('click', async () => {
+      const target = urlInput.value.trim();
+      if (!target) return alert('Ingrese la URL');
+      status.textContent = 'Estado: Cargando...';
+      results.innerHTML = '';
+      raw.textContent = 'Cargando...';
+      rawJsonPreview.textContent = '—';
+      try {
+        const html = await fetchWithMode(target);
+        lastRawHtml = html; // guardar HTML completo
+        // limitamos la vista RAW para no romper la UI
+        raw.textContent = html.slice(0, 200000);
+        const data = parseCabezas(html);
+        lastJson = data;
+        status.textContent = 'Estado: Datos cargados (' + data.length + ' secciones)';
+        if (!data.length) {
+          results.innerHTML = '<div>No se encontraron secciones con el selector actual. Probá cambiar el modo o revisar la URL.</div>';
+          return;
+        }
+        results.innerHTML = '';
+        data.forEach(d => {
+          const el = document.createElement('div');
+          el.className = 'card';
+          el.innerHTML = '<h3>' + escapeHtml(d.title) + '</h3>' +
+            '<div style="color:#444;margin-top:6px">' + escapeHtml(d.textSnippet) + '...</div>' +
+            '<div class="numbers" style="margin-top:8px">' + (d.numbers.length ? d.numbers.map(n => '<div class="number">' + n + '</div>').join('') : '<div style="color:#666">No se detectaron números</div>') + '</div>';
+          results.appendChild(el);
+        });
+      } catch (e) {
+        status.textContent = 'Estado: Error';
+        results.innerHTML = '<div style="color:red">Error: ' + escapeHtml(e.message) + '</div>';
+        raw.textContent = '';
+        lastRawHtml = '';
+      }
+    });
+
+    btnRawToJson.addEventListener('click', () => {
+      // usar lastRawHtml preferentemente, si no está usar lo mostrado en <pre>
+      const html = lastRawHtml || raw.textContent || '';
+      if (!html) return alert('No hay HTML cargado. Primero haz "Obtener Source".');
+      try {
+        const helperJson = htmlToHelperJson(html);
+        rawJsonPreview.textContent = JSON.stringify(helperJson, null, 2);
+        // además ponemos en lastJson para poder descargar
+        lastJson = helperJson;
+        status.textContent = 'Estado: RAW convertido a JSON (vista en "JSON generado desde RAW")';
+      } catch (err) {
+        alert('Error al convertir RAW a JSON: ' + err.message);
+      }
+    });
+
+    btnDownload.addEventListener('click', () => {
+      if (!lastJson) return alert('No hay datos para descargar. Primero obtén los resultados o convierte el RAW a JSON.');
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(lastJson, null, 2));
+      const a = document.createElement('a');
+      a.setAttribute('href', dataStr);
+      const filename = 'dejugadas_cabezas_' + new Date().toISOString().slice(0,10) + '.json';
+      a.setAttribute('download', filename);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]); }
+  </script>
+</body>
+</html>
