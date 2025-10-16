@@ -40,7 +40,7 @@ Incluye heurísticas para detectar secciones llamadas “Cabezas” y extraer n�
 
 ---
 
-## 🧩 Ejemplo de interfaz
+## ⚙️ Ejemplo de interfaz
 
 ![View Source](Source.png)
 ![JSON](JSON.png)
