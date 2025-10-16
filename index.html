@@ -139,9 +139,9 @@
         const title = n.querySelector('h1,h2,h3,h4')?.textContent?.trim() || (n.getAttribute('aria-label')||'').trim() || 'Sin título';
         // Buscar números de 1 o 2 dígitos que sean probables cabezas
         const text = n.textContent.replace(/\s+/g,' ').trim();
-        const numbers = Array.from(n.querySelectorAll('li,span,div')).map(el => el.textContent.trim()).filter(t => /^\d{1,2}$/.test(t));
+        const numbers = Array.from(n.querySelectorAll('li,span,div')).map(el => el.textContent.trim()).filter(t => /^\d{3,4}$/.test(t));
         // Si no hay elementos, intentar extraer con regex
-        let numbersFromText = text.match(/\b\d{1,2}\b/g) || [];
+        let numbersFromText = text.match(/\b\d{3,4}\b/g) || [];
         numbersFromText = numbersFromText.filter((v,i,arr) => arr.indexOf(v)===i);
         const uniq = Array.from(new Set(numbers.concat(numbersFromText)));
         return { title, textSnippet: text.slice(0,200), numbers: uniq };
